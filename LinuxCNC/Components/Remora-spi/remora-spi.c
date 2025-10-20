@@ -1476,8 +1476,8 @@ static int check_gpio_access(int pin)
     
     if (line) {
         // 检查线是否有效
-        const char *name = gpiod_line_get_name(line);
-        rtapi_print_msg(RTAPI_MSG_INFO, "GPIO %d line name: %s\n", pin, name ? name : "(no name)");
+        // const char *name = gpiod_line_get_name(line);
+        // rtapi_print_msg(RTAPI_MSG_INFO, "GPIO %d line name: %s\n", pin, name ? name : "(no name)");
         accessible = 1;
         gpiod_line_release(line);
     } else {
