@@ -27,6 +27,53 @@
 #define H618_SPI_MODE_2    2  // CPOL=1, CPHA=0
 #define H618_SPI_MODE_3    3  // CPOL=1, CPHA=1
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+#include <linux/spi/spidev.h>
+#include <linux/gpio.h>
+// 添加libgpiod头文件
+#include <gpiod.h>
+
+// 确保gpiod_chip和gpiod_line结构体已定义
+#ifndef __GPIOD_HEADER_INCLUDED__
+// 如果libgpiod头文件未正确包含，定义这些结构体以避免编译错误
+struct gpiod_chip;  // 前向声明
+struct gpiod_line;  // 前向声明
+#endif
+
+// 函数声明，避免类型冲突
+int h618_detect(void);
+static int set_gpio_direction(int pin, const char *direction);
+static int set_gpio_value(int pin, int value);
+static int check_gpio_access(int pin);
+int h618_gpio_init(void);
+void h618_gpio_set_fsel(uint8_t pin, uint8_t fsel);
+void h618_gpio_set(uint8_t pin);
+void h618_gpio_clear(uint8_t pin);
+int h618_spi_init(uint8_t spi_num, uint8_t cs_num, uint8_t mode, uint32_t freq);
+void h618_spi_transfer(const void *txbuf, void *rxbuf, uint8_t len);
+void h618_spi_cleanup(void);
+
+// 全局变量
+ int h618_spi_fd = -1;
+ uint8_t current_spi_num = 1;
+ uint8_t current_cs_num = 1;
+// libgpiod相关变量
+ struct gpiod_chip *gpio_chip = NULL;  // GPIO芯片句柄
+ struct gpiod_line *reset_gpio_line = NULL;  // 重置GPIO线句柄
+ const char *gpio_chip_path = "/dev/gpiochip0";  // 默认GPIO芯片路径
+
+// SPI模式定义
+#define SPI_MODE_0 0x00
+#define SPI_MODE_1 0x01
+#define SPI_MODE_2 0x02
+#define SPI_MODE_3 0x03
+
 #include "rtapi.h"		/* RTAPI realtime OS API */
 #include "rtapi_app.h"		/* RTAPI realtime module decls */
 #include "hal.h"		/* HAL public API decls */
@@ -1273,33 +1320,6 @@ static CONTROL parse_ctrl_type(const char *ctrl)
  * Implementation file for H618 SPI interface using spidev
  * Used for Remora LinuxCNC driver
  */
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
-#include <errno.h>
-#include <sys/ioctl.h>
-#include <linux/spi/spidev.h>
-#include <linux/gpio.h>
-// 添加libgpiod头文件
-#include <gpiod.h>
-
-// 全局变量
- int h618_spi_fd = -1;
- uint8_t current_spi_num = 0;
- uint8_t current_cs_num = 0;
-// libgpiod相关变量
- struct gpiod_chip *gpio_chip = NULL;  // GPIO芯片句柄
- struct gpiod_line *reset_gpio_line = NULL;  // 重置GPIO线句柄
- const char *gpio_chip_path = "/dev/gpiochip0";  // 默认GPIO芯片路径
-
-// SPI模式定义
-#define SPI_MODE_0 0x00
-#define SPI_MODE_1 0x01
-#define SPI_MODE_2 0x02
-#define SPI_MODE_3 0x03
 
 // 检测是否运行在H618平台上
 int h618_detect(void)
