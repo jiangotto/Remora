@@ -37,7 +37,7 @@
 #include <linux/spi/spidev.h>
 #include <linux/gpio.h>
 // 编译指令，告诉halcompile需要链接libgpiod库
-#define MODULE_LIBS "-lgpiod"
+#define EXTRA_libs "-lgpiod"
 
 // 添加libgpiod头文件
 #include <gpiod.h>
