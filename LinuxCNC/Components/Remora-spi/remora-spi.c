@@ -1505,7 +1505,7 @@ int h618_gpio_init(void)
     
     if (gpio_chip) {
         gpiod_chip_close(gpio_chip);
-        gpiod_chip = NULL;
+        gpio_chip = NULL;
     }
     
     // 打开GPIO芯片
