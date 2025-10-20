@@ -47,6 +47,9 @@
 #include "spi-dw.h"
 #include "spi-dw.c"
 
+// H618 support
+#include "h618_spi.h"
+
 #include "dtcboards.h"
 
 #include "remora.h"
@@ -151,6 +154,7 @@ static const char 	*prefix = PREFIX;
 
 static bool			bcm;					// use BCM2835 driver
 static bool			rp1;					// use RP1 driver
+static bool			h618;					// use H618 driver
 
 static int 			num_chan = 0;			// number of step generators configured
 static long 		old_dtns;				// update_freq function period in nsec - (THIS IS RUNNING IN THE PI)
@@ -305,6 +309,11 @@ int rtapi_app_main(void)
 	else if (rp1 == true)
 	{
 		gpio_set_fsel(reset_gpio_pin, GPIO_FSEL_OUTPUT);
+	}
+	else if (h618 == true)
+	{
+		// 设置H618的reset GPIO引脚为输出
+		h618_gpio_set_fsel(reset_gpio_pin, 1);  // 1表示输出模式
 	}
 	
 	retval = hal_pin_bit_newf(HAL_IN, &(data->PRUreset),
@@ -470,6 +479,10 @@ This is throwing errors from axis.py for some reason...
 
 void rtapi_app_exit(void)
 {
+    // 清理H618资源
+    if (h618 == true) {
+        h618_spi_cleanup();
+    }
     hal_exit(comp_id);
 }
 
@@ -488,8 +501,25 @@ int rt_peripheral_init(void)
     const int DTC_MAX = 8;
     const char *dtcs[DTC_MAX + 1];
     
-    // assume were only running on >RPi3
+    // 首先检查是否是H618平台
+    if (h618_detect()) {
+        h618 = true;
+        rtapi_print_msg(RTAPI_MSG_INFO, "H618 platform detected, using H618 driver\n");
+        
+        // 初始化H618 SPI
+        if (SPI_num == -1) SPI_num = 0; // 默认使用SPI0
+        if (CS_num == -1) CS_num = 0;   // 默认使用CS0
+        if (SPI_freq == -1) SPI_freq = 20000000; // 默认20MHz
+        
+        if (!h618_spi_init(SPI_num, CS_num, H618_SPI_MODE_0, SPI_freq)) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "H618 SPI initialization failed\n");
+            return -1;
+        }
+        
+        return 1;
+    }
     
+    // 检查是否是树莓派平台
     if ((fp = fopen("/proc/device-tree/compatible" , "rb"))){
 
         // Read the 'compatible' string-list from the device-tree
@@ -1044,6 +1074,10 @@ void spi_read()
 		{
 			gpio_set(reset_gpio_pin);
 		}
+		else if (h618 == true)
+		{
+			h618_gpio_set(reset_gpio_pin);
+		}
     }
 	else
 	{
@@ -1054,6 +1088,10 @@ void spi_read()
 		else if (rp1 == true)
 		{
 			gpio_clear(reset_gpio_pin);
+		}
+		else if (h618 == true)
+		{
+			h618_gpio_clear(reset_gpio_pin);
 		}
     }
 	
@@ -1212,6 +1250,10 @@ void spi_transfer()
 	else if (rp1 == true)
 	{
 		rp1spi_transfer(0, txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
+	}
+	else if (h618 == true)
+	{
+		h618_spi_transfer(txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
 	}
 }
 
