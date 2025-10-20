@@ -19,6 +19,13 @@
 * Last change: updated for RPi5 with RP1 southbridge
 ********************************************************************/
 
+#include <stdint.h>
+
+// SPI模式定义（与Linux spidev兼容）
+#define H618_SPI_MODE_0    0  // CPOL=0, CPHA=0
+#define H618_SPI_MODE_1    1  // CPOL=0, CPHA=1
+#define H618_SPI_MODE_2    2  // CPOL=1, CPHA=0
+#define H618_SPI_MODE_3    3  // CPOL=1, CPHA=1
 
 #include "rtapi.h"		/* RTAPI realtime OS API */
 #include "rtapi_app.h"		/* RTAPI realtime module decls */
@@ -1261,14 +1268,6 @@ static CONTROL parse_ctrl_type(const char *ctrl)
     return INVALID;
 }
 
-#include <stdint.h>
-
-// SPI模式定义（与Linux spidev兼容）
-#define H618_SPI_MODE_0    0  // CPOL=0, CPHA=0
-#define H618_SPI_MODE_1    1  // CPOL=0, CPHA=1
-#define H618_SPI_MODE_2    2  // CPOL=1, CPHA=0
-#define H618_SPI_MODE_3    3  // CPOL=1, CPHA=1
-
 // H618 support - directly including implementation
 /* h618_spi.c
  * Implementation file for H618 SPI interface using spidev
@@ -1288,13 +1287,13 @@ static CONTROL parse_ctrl_type(const char *ctrl)
 #include <gpiod.h>
 
 // 全局变量
-static int h618_spi_fd = -1;
-static uint8_t current_spi_num = 0;
-static uint8_t current_cs_num = 0;
+ int h618_spi_fd = -1;
+ uint8_t current_spi_num = 0;
+ uint8_t current_cs_num = 0;
 // libgpiod相关变量
-static struct gpiod_chip *gpio_chip = NULL;  // GPIO芯片句柄
-static struct gpiod_line *reset_gpio_line = NULL;  // 重置GPIO线句柄
-static const char *gpio_chip_path = "/dev/gpiochip0";  // 默认GPIO芯片路径
+ struct gpiod_chip *gpio_chip = NULL;  // GPIO芯片句柄
+ struct gpiod_line *reset_gpio_line = NULL;  // 重置GPIO线句柄
+ const char *gpio_chip_path = "/dev/gpiochip0";  // 默认GPIO芯片路径
 
 // SPI模式定义
 #define SPI_MODE_0 0x00
