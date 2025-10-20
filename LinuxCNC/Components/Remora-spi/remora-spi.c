@@ -63,12 +63,17 @@
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
 #include <linux/gpio.h>
+// 添加libgpiod头文件
+#include <gpiod.h>
 
 // 全局变量
 static int h618_spi_fd = -1;
 static uint8_t current_spi_num = 0;
 static uint8_t current_cs_num = 0;
-static int h618_gpio_fd = -1;  // GPIO文件描述符，用于通过libgpiod操作GPIO
+// libgpiod相关变量
+static struct gpiod_chip *gpio_chip = NULL;  // GPIO芯片句柄
+static struct gpiod_line *reset_gpio_line = NULL;  // 重置GPIO线句柄
+static const char *gpio_chip_path = "/dev/gpiochip0";  // 默认GPIO芯片路径
 
 // SPI模式定义
 #define SPI_MODE_0 0x00
@@ -116,63 +121,166 @@ int h618_detect(void)
     return 0;
 }
 
-// 通过sysfs设置GPIO方向
+// 使用libgpiod设置GPIO方向
 static int set_gpio_direction(int pin, const char *direction)
 {
-    char path[64];
-    FILE *fp;
+    rtapi_print_msg(RTAPI_MSG_INFO, "Setting GPIO %d direction to %s using libgpiod\n", pin, direction);
     
-    // 导出GPIO引脚
-    snprintf(path, sizeof(path), "/sys/class/gpio/export");
-    fp = fopen(path, "w");
-    if (fp == NULL) {
-        // 如果导出失败，可能是因为已经导出，忽略错误
-        rtapi_print_msg(RTAPI_MSG_DBG, "Failed to export GPIO %d: %s\n", pin, strerror(errno));
-    } else {
-        fprintf(fp, "%d", pin);
-        fclose(fp);
+    // 确保GPIO芯片已打开
+    if (!gpio_chip) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "GPIO chip not initialized\n");
+        return -1;
+    }
+    
+    // 获取GPIO线
+    struct gpiod_line *line = gpiod_chip_get_line(gpio_chip, pin);
+    if (!line) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to get GPIO %d line: %s\n", pin, strerror(errno));
+        return -1;
     }
     
     // 设置GPIO方向
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
-    fp = fopen(path, "w");
-    if (fp == NULL) {
-        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to set GPIO %d direction: %s\n", pin, strerror(errno));
+    int ret;
+    if (strcmp(direction, "out") == 0) {
+        ret = gpiod_line_request_output(line, "remora-spi", 0);
+    } else {
+        ret = gpiod_line_request_input(line, "remora-spi");
+    }
+    
+    if (ret < 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to set GPIO %d direction to %s: %s\n", pin, direction, strerror(errno));
+        gpiod_line_release(line);
         return -1;
     }
-    fprintf(fp, "%s", direction);
-    fclose(fp);
+    
+    rtapi_print_msg(RTAPI_MSG_DBG, "Successfully set GPIO %d direction to %s\n", pin, direction);
+    
+    // 对于重置引脚，保存线句柄
+    if (pin == reset_gpio_pin && reset_gpio_line != line) {
+        if (reset_gpio_line) {
+            gpiod_line_release(reset_gpio_line);
+        }
+        reset_gpio_line = line;
+    } else {
+        // 对于其他引脚，使用完后释放
+        gpiod_line_release(line);
+    }
     
     return 0;
 }
 
-// 通过sysfs设置GPIO值
+// 使用libgpiod设置GPIO值
 static int set_gpio_value(int pin, int value)
 {
-    char path[64];
-    FILE *fp;
+    rtapi_print_msg(RTAPI_MSG_DBG, "Setting GPIO %d value to %d using libgpiod\n", pin, value);
     
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", pin);
-    fp = fopen(path, "w");
-    if (fp == NULL) {
-        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to set GPIO %d value: %s\n", pin, strerror(errno));
+    // 尝试获取GPIO线（优先使用已保存的重置引脚句柄）
+    struct gpiod_line *line = NULL;
+    
+    if (pin == reset_gpio_pin && reset_gpio_line) {
+        line = reset_gpio_line;
+    } else {
+        // 确保GPIO芯片已打开
+        if (!gpio_chip) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "GPIO chip not initialized\n");
+            return -1;
+        }
+        
+        line = gpiod_chip_get_line(gpio_chip, pin);
+        if (!line) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "Failed to get GPIO %d line: %s\n", pin, strerror(errno));
+            return -1;
+        }
+        
+        // 如果是首次使用该引脚作为输出，需要请求输出方向
+        if (gpiod_line_request_output(line, "remora-spi", value) < 0) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "Failed to request GPIO %d as output: %s\n", pin, strerror(errno));
+            gpiod_line_release(line);
+            return -1;
+        }
+    }
+    
+    // 设置GPIO值
+    int ret = gpiod_line_set_value(line, value);
+    if (ret < 0) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to set GPIO %d value to %d: %s\n", pin, value, strerror(errno));
+        
+        // 仅在不是重置引脚的情况下释放
+        if (pin != reset_gpio_pin || line != reset_gpio_line) {
+            gpiod_line_release(line);
+        }
         return -1;
     }
-    fprintf(fp, "%d", value);
-    fclose(fp);
+    
+    rtapi_print_msg(RTAPI_MSG_DBG, "Successfully set GPIO %d value to %d\n", pin, value);
+    
+    // 仅在不是重置引脚的情况下释放
+    if (pin != reset_gpio_pin || line != reset_gpio_line) {
+        gpiod_line_release(line);
+    }
     
     return 0;
 }
 
-// 初始化GPIO（使用sysfs）
+// 检查GPIO是否可访问（使用libgpiod）
+static int check_gpio_access(int pin)
+{
+    rtapi_print_msg(RTAPI_MSG_INFO, "Checking GPIO %d access using libgpiod\n", pin);
+    
+    // 尝试打开GPIO芯片
+    struct gpiod_chip *temp_chip = gpiod_chip_open(gpio_chip_path);
+    if (!temp_chip) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to open GPIO chip %s: %s\n", gpio_chip_path, strerror(errno));
+        return 0;
+    }
+    
+    // 尝试获取GPIO线
+    struct gpiod_line *line = gpiod_chip_get_line(temp_chip, pin);
+    int accessible = 0;
+    
+    if (line) {
+        // 检查线是否有效
+        const char *name = gpiod_line_get_name(line);
+        rtapi_print_msg(RTAPI_MSG_INFO, "GPIO %d line name: %s\n", pin, name ? name : "(no name)");
+        accessible = 1;
+        gpiod_line_release(line);
+    } else {
+        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to get GPIO %d line: %s\n", pin, strerror(errno));
+    }
+    
+    gpiod_chip_close(temp_chip);
+    return accessible;
+}
+
+// 初始化GPIO（使用libgpiod）
 int h618_gpio_init(void)
 {
-    // GPIO通过sysfs操作，不需要额外的初始化
-    rtapi_print_msg(RTAPI_MSG_INFO, "H618 GPIO initialized using sysfs\n");
+    rtapi_print_msg(RTAPI_MSG_INFO, "Initializing H618 GPIO using libgpiod\n");
+    
+    // 关闭已有的GPIO资源
+    if (reset_gpio_line) {
+        gpiod_line_release(reset_gpio_line);
+        reset_gpio_line = NULL;
+    }
+    
+    if (gpio_chip) {
+        gpiod_chip_close(gpio_chip);
+        gpiod_chip = NULL;
+    }
+    
+    // 打开GPIO芯片
+    gpio_chip = gpiod_chip_open(gpio_chip_path);
+    if (!gpio_chip) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "Failed to open GPIO chip %s: %s\n", gpio_chip_path, strerror(errno));
+        return 0;
+    }
+    
+    rtapi_print_msg(RTAPI_MSG_INFO, "Successfully opened GPIO chip %s\n", gpio_chip_path);
+    rtapi_print_msg(RTAPI_MSG_INFO, "H618 GPIO initialized using libgpiod\n");
     return 1;
 }
 
-// 设置GPIO功能（对于sysfs，我们只需要设置方向）
+// 设置GPIO功能（使用libgpiod）
 void h618_gpio_set_fsel(uint8_t pin, uint8_t fsel)
 {
     // fsel=1表示输出模式
@@ -183,13 +291,13 @@ void h618_gpio_set_fsel(uint8_t pin, uint8_t fsel)
     }
 }
 
-// 设置GPIO为高电平
+// 设置GPIO为高电平（使用libgpiod）
 void h618_gpio_set(uint8_t pin)
 {
     set_gpio_value(pin, 1);
 }
 
-// 设置GPIO为低电平
+// 设置GPIO为低电平（使用libgpiod）
 void h618_gpio_clear(uint8_t pin)
 {
     set_gpio_value(pin, 0);
@@ -201,6 +309,7 @@ int h618_spi_init(uint8_t spi_num, uint8_t cs_num, uint8_t mode, uint32_t freq)
     char spi_dev_path[32];
     uint8_t bits = 8;
     uint16_t delay = 0;
+    int gpio_available = 0;
     
     // 记录当前配置
     current_spi_num = spi_num;
@@ -277,8 +386,50 @@ int h618_spi_init(uint8_t spi_num, uint8_t cs_num, uint8_t mode, uint32_t freq)
         return 0;
     }
     
+    // 初始化libgpiod GPIO
+    if (!h618_gpio_init()) {
+        rtapi_print_msg(RTAPI_MSG_WARN, "Warning: Failed to initialize GPIO subsystem, continuing without reset capability\n");
+        gpio_available = 0;
+    } else {
+        // 检查GPIO是否可访问
+        gpio_available = check_gpio_access(reset_gpio_pin);
+        
+        // 尝试初始化GPIO（用于重置），但失败不会中断初始化
+        if (gpio_available) {
+            if (set_gpio_direction(reset_gpio_pin, "out") == 0) {
+                rtapi_print_msg(RTAPI_MSG_INFO, "GPIO %d configured as output (libgpiod)\n", reset_gpio_pin);
+                
+                // 尝试执行重置操作
+                if (set_gpio_value(reset_gpio_pin, 0) == 0) {
+                    rtapi_print_msg(RTAPI_MSG_INFO, "Asserted reset on GPIO %d\n", reset_gpio_pin);
+                    
+                    // 等待一段时间
+                    usleep(100000); // 100ms
+                    
+                    // 释放重置
+                    if (set_gpio_value(reset_gpio_pin, 1) == 0) {
+                        rtapi_print_msg(RTAPI_MSG_INFO, "Deasserted reset on GPIO %d\n", reset_gpio_pin);
+                        // 再次等待
+                        usleep(100000); // 100ms
+                    } else {
+                        rtapi_print_msg(RTAPI_MSG_WARN, "Warning: Could not deassert reset, continuing without proper reset\n");
+                    }
+                } else {
+                    rtapi_print_msg(RTAPI_MSG_WARN, "Warning: Could not assert reset, continuing without proper reset\n");
+                }
+            } else {
+                rtapi_print_msg(RTAPI_MSG_WARN, "Warning: Could not configure GPIO direction, continuing without reset capability\n");
+            }
+        } else {
+            rtapi_print_msg(RTAPI_MSG_WARN, "Warning: GPIO %d not available, continuing without reset capability\n", reset_gpio_pin);
+        }
+    }
+    
     rtapi_print_msg(RTAPI_MSG_INFO, "H618 SPI%d.%d initialized successfully, mode=%d, freq=%d Hz, bits=%d\n",
                    spi_num, cs_num, mode, freq, bits);
+    if (!gpio_available) {
+        rtapi_print_msg(RTAPI_MSG_WARN, "Note: Reset functionality disabled due to GPIO access issues\n");
+    }
     
     return 1;
 }
@@ -313,6 +464,18 @@ void h618_spi_cleanup(void)
     if (h618_spi_fd >= 0) {
         close(h618_spi_fd);
         h618_spi_fd = -1;
+    }
+    
+    // 清理GPIO资源
+    if (reset_gpio_line) {
+        gpiod_line_release(reset_gpio_line);
+        reset_gpio_line = NULL;
+    }
+    
+    if (gpio_chip) {
+        gpiod_chip_close(gpio_chip);
+        gpio_chip = NULL;
+        rtapi_print_msg(RTAPI_MSG_INFO, "H618 GPIO resources cleaned up\n");
     }
     
     rtapi_print_msg(RTAPI_MSG_INFO, "H618 SPI resources cleaned up\n");
