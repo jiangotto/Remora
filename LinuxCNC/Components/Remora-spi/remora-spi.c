@@ -1261,7 +1261,14 @@ static CONTROL parse_ctrl_type(const char *ctrl)
     return INVALID;
 }
 
-#include "h618_spi.h"
+#include <stdint.h>
+
+// SPI模式定义（与Linux spidev兼容）
+#define H618_SPI_MODE_0    0  // CPOL=0, CPHA=0
+#define H618_SPI_MODE_1    1  // CPOL=0, CPHA=1
+#define H618_SPI_MODE_2    2  // CPOL=1, CPHA=0
+#define H618_SPI_MODE_3    3  // CPOL=1, CPHA=1
+
 // H618 support - directly including implementation
 /* h618_spi.c
  * Implementation file for H618 SPI interface using spidev
