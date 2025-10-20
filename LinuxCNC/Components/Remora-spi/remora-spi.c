@@ -47,6 +47,7 @@
 #include "spi-dw.h"
 #include "spi-dw.c"
 
+#include "h618_spi.h"
 // H618 support - directly including implementation
 /* h618_spi.c
  * Implementation file for H618 SPI interface using spidev
@@ -456,7 +457,7 @@ RTAPI_MP_INT(CS_num, "CS number");
 int32_t SPI_freq = -1;
 RTAPI_MP_INT(SPI_freq, "SPI frequency");
 
-static int reset_gpio_pin = 25;				// RPI GPIO pin number used to force watchdog reset of the PRU 
+static int reset_gpio_pin = 233;				// RPI GPIO pin number used to force watchdog reset of the PRU 
 
 
 
